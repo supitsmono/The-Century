@@ -1,0 +1,8 @@
+{
+  "name": "The Century",
+  "description": "A timeless digital archive of human messages, sealed in time and revealed only when the global countdown reaches zero.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
