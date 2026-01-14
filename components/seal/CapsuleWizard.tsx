@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { X } from 'lucide-react';
 import { Capsule } from '../../types';
 import { useWizardState } from './hooks/useWizardState';
@@ -16,6 +16,8 @@ import { PhotoViewer } from './ui/PhotoGrid';
 import { CeremonyOverlay } from './ui/CeremonyOverlay';
 import { MONTHS } from './data/constants';
 import { getReducedMotionTransition } from './data/variants';
+import { createCapsule, getCapsule } from '../../lib/api';
+import { mapBackendToUI, mapUIToCreateRequest, uiDobToIso, isoToUiDob } from '../../lib/capsuleMapping';
 
 interface CapsuleWizardProps {
   onClose: () => void;
@@ -25,10 +27,22 @@ interface CapsuleWizardProps {
 export const CapsuleWizard: React.FC<CapsuleWizardProps> = ({ onClose, onSuccess }) => {
   const { step: stepParam } = useParams<{ step: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [state, actions] = useWizardState();
   const dropdown = useDropdown(state.formData.country);
   const recorder = useRecorder();
   const [isVideoViewerOpen, setIsVideoViewerOpen] = React.useState(false);
+
+  // Phase 3A: URL persistence - capsule public_id
+  const capsuleFromUrl = searchParams.get('capsule');
+  const [capsulePublicId, setCapsulePublicId] = useState<string | null>(null);
+  const [isHydrating, setIsHydrating] = useState(false);
+  const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const effectiveCapsuleId = capsulePublicId ?? capsuleFromUrl;
+
+  // StrictMode guard for hydration
+  const hydratedRef = useRef<string | null>(null);
+  const createOnceRef = useRef(false);
 
   // Parse step from URL and sync with state
   const urlStep = stepParam ? parseInt(stepParam, 10) : 1;
@@ -42,13 +56,119 @@ export const CapsuleWizard: React.FC<CapsuleWizardProps> = ({ onClose, onSuccess
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [validStep]); // Only sync when URL param changes
 
+  // Phase 3A: Hydration - load capsule from backend if ?capsule= exists
+  useEffect(() => {
+    if (!capsuleFromUrl) return;
+    if (hydratedRef.current === capsuleFromUrl) return; // Already hydrated this capsule
+    hydratedRef.current = capsuleFromUrl;
+
+    (async () => {
+      setIsHydrating(true);
+      setHydrationError(null);
+      try {
+        const backendCapsule = await getCapsule(capsuleFromUrl);
+        const uiCapsule = mapBackendToUI(backendCapsule);
+        
+        // Hydrate wizard state from backend capsule
+        actions.setFormData({
+          name: uiCapsule.name || '',
+          country: uiCapsule.country,
+          town: uiCapsule.town,
+          message: uiCapsule.message,
+        });
+        
+        // Parse dob (YYYY-MM-DD) to dobDay/dobMonth/dobYear
+        const dobParts = isoToUiDob(uiCapsule.dob);
+        actions.setDobDay(dobParts.dobDay);
+        actions.setDobMonth(dobParts.dobMonth);
+        actions.setDobYear(dobParts.dobYear);
+        
+        // Phase 3B: Hydrate backend paths (source of truth)
+        // ONLY set backend paths, NEVER local selections (photosLocal/videoLocal stay empty on refresh)
+        // Ignore legacy fields (photos, video) - use only photos_paths and video_path
+        actions.setUploadedPhotosPaths(backendCapsule.photos_paths || []);
+        actions.setUploadedVideoPath(backendCapsule.video_path || null);
+        
+        setCapsulePublicId(capsuleFromUrl);
+      } catch (error) {
+        console.error('Hydration error:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Failed to load capsule';
+        setHydrationError(errorMessage);
+      } finally {
+        setIsHydrating(false);
+      }
+    })();
+  }, [capsuleFromUrl, actions]);
+
   // Navigate to URL when step changes (from user actions like Next/Back buttons)
-  const handleStepChange = React.useCallback((newStep: number) => {
+  // Phase 3A: Preserve ?capsule= query param
+  const handleStepChange = useCallback((newStep: number) => {
     if (newStep >= 1 && newStep <= 6) {
-      // Update URL - state will sync via useEffect above
-      navigate(`/seal/${newStep}`, { replace: true });
+      const path = `/seal/${newStep}`;
+      const search = effectiveCapsuleId ? `?capsule=${effectiveCapsuleId}` : '';
+      navigate(`${path}${search}`, { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, effectiveCapsuleId]);
+
+  // Phase 3A: Check if all required fields are complete (for capsule creation)
+  const requiredFieldsComplete = useCallback(() => {
+    return (
+      state.formData.country &&
+      state.formData.country.trim().length > 0 &&
+      state.formData.town &&
+      state.formData.town.trim().length > 0 &&
+      state.dobYear &&
+      state.dobMonth &&
+      state.dobDay &&
+      state.formData.message &&
+      state.formData.message.trim().length > 0
+    );
+  }, [state.formData.country, state.formData.town, state.dobYear, state.dobMonth, state.dobDay, state.formData.message]);
+
+  // Phase 3A: Create capsule (StrictMode-safe, called from Step 4 "Next")
+  const ensureCapsuleCreated = useCallback(async (): Promise<string | null> => {
+    if (effectiveCapsuleId) {
+      return effectiveCapsuleId; // Already created
+    }
+    if (createOnceRef.current) {
+      return null; // Prevent double creation
+    }
+
+    if (!requiredFieldsComplete()) {
+      throw new Error('Required fields are not complete');
+    }
+
+    createOnceRef.current = true;
+
+    try {
+      // Build create request from wizard state
+      const dobIso = uiDobToIso(state.dobDay, state.dobMonth, state.dobYear);
+      const uiCapsule: Partial<Capsule> = {
+        name: state.formData.name || undefined,
+        country: state.formData.country,
+        town: state.formData.town,
+        dob: dobIso,
+        message: state.formData.message,
+        archivalTimestamp: state.currentMetadata,
+        ageAtCreation: actions.calculateAge(),
+      };
+
+      const createPayload = mapUIToCreateRequest(uiCapsule);
+      const response = await createCapsule(createPayload);
+
+      setCapsulePublicId(response.public_id);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('capsule', response.public_id);
+        return next;
+      }, { replace: true });
+
+      return response.public_id;
+    } catch (error) {
+      createOnceRef.current = false; // Allow retry on error
+      throw error;
+    }
+  }, [effectiveCapsuleId, requiredFieldsComplete, state, actions, setSearchParams]);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -416,7 +536,17 @@ export const CapsuleWizard: React.FC<CapsuleWizardProps> = ({ onClose, onSuccess
                 message={state.formData.message}
                 onMessageChange={(msg) => actions.setFormData({ message: msg })}
                 onBack={() => handleStepChange(3)}
-                onNext={() => handleStepChange(5)}
+                onNext={async () => {
+                  // Phase 3A: Create capsule before proceeding to Step 5
+                  try {
+                    await ensureCapsuleCreated();
+                    handleStepChange(5);
+                  } catch (error) {
+                    console.error('Failed to create capsule:', error);
+                    const errorMessage = error instanceof Error ? error.message : 'Failed to create capsule. Please try again.';
+                    actions.setErrorMessage(errorMessage);
+                  }
+                }}
               />
             )}
             {state.step === 5 && (
@@ -426,6 +556,13 @@ export const CapsuleWizard: React.FC<CapsuleWizardProps> = ({ onClose, onSuccess
                 dobDay={state.dobDay}
                 dobMonth={state.dobMonth}
                 dobYear={state.dobYear}
+                // Phase 3B: New state structure
+                photosLocal={state.photosLocal}
+                videoLocal={state.videoLocal}
+                photosPaths={state.photosPaths}
+                videoPath={state.videoPath}
+                effectiveCapsuleId={effectiveCapsuleId}
+                // Deprecated: Keep for backward compatibility (read-only)
                 photos={state.photos}
                 videoBlobUrl={state.videoBlobUrl}
                 videoBase64={state.videoBase64}
@@ -443,9 +580,14 @@ export const CapsuleWizard: React.FC<CapsuleWizardProps> = ({ onClose, onSuccess
                     actions.setDobDay('');
                     actions.setDobMonth('');
                     actions.setDobYear('');
-                    actions.setPhotos([]);
-                    actions.setVideoBlobUrl(null);
-                    actions.setVideoBase64(null);
+                    actions.clearLocalMedia();
+                    actions.resetUploadedMedia();
+                    actions.setFinalCapsule(null);
+                    actions.setSelectedPhoto(null);
+                    recorder.setVideoBlobUrl(null);
+                    recorder.setVideoBase64(null);
+                    setCapsulePublicId(null); // Clear public ID
+                    setSearchParams({}, { replace: true }); // Clear URL param
                     handleStepChange(1);
                   }
                 }}
@@ -454,6 +596,13 @@ export const CapsuleWizard: React.FC<CapsuleWizardProps> = ({ onClose, onSuccess
                 isSubmitting={state.isSubmitting}
                 reviewVideoRef={recorder.reviewVideoRef}
                 onViewerOpenChange={setIsVideoViewerOpen}
+                // Phase 3B: Upload callbacks
+                onPhotosUploaded={(paths) => {
+                  actions.setUploadedPhotosPaths(paths);
+                }}
+                onVideoUploaded={(path) => {
+                  actions.setUploadedVideoPath(path);
+                }}
               />
             )}
             {state.step === 6 && state.finalCapsule && (

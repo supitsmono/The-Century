@@ -10,11 +10,32 @@ export interface Capsule {
   town: string;
   dob: string; // YYYY-MM-DD
   message: string;
-  photos: string[]; // Will be storage paths in Phase 2, base64 for now
-  video?: string; // Will be storage path in Phase 2, base64 for now
+  photos: string[]; // Storage paths (Phase 2) - DEPRECATED: use photosPaths
+  photosPaths?: string[]; // Storage paths for photos (Phase 2)
+  photosMeta?: PhotoMetadata[]; // Metadata for photos (Phase 2)
+  video?: string; // Storage path (Phase 2) - DEPRECATED: use videoPath
+  videoPath?: string; // Storage path for video (Phase 2)
+  videoMeta?: VideoMetadata; // Metadata for video (Phase 2)
   createdAt: Date;
   ageAtCreation: number;
   openAt: Date; // Replaces archivalTimestamp (TIMESTAMPTZ)
+}
+
+// Photo metadata
+export interface PhotoMetadata {
+  path: string;
+  size: number; // bytes
+  mimeType: string;
+  uploadedAt: Date;
+}
+
+// Video metadata
+export interface VideoMetadata {
+  path: string;
+  size: number; // bytes
+  mimeType: string;
+  duration?: number; // seconds (optional)
+  uploadedAt: Date;
 }
 
 // Database capsule (includes all DB fields)
@@ -26,8 +47,12 @@ export interface CapsuleDB {
   town: string;
   dob: string;
   message: string;
-  photos: string[];
-  video?: string;
+  photos: string[]; // DEPRECATED: Legacy base64, use photos_paths
+  photos_paths?: string[]; // Storage paths for photos (Phase 2)
+  photos_meta?: PhotoMetadata[]; // JSONB metadata (Phase 2)
+  video?: string; // DEPRECATED: Legacy base64, use video_path
+  video_path?: string; // Storage path for video (Phase 2)
+  video_meta?: VideoMetadata; // JSONB metadata (Phase 2)
   createdAt: Date;
   ageAtCreation: number;
   openAt: Date;
@@ -46,6 +71,7 @@ export interface CreateCapsuleRequest {
 export interface CapsuleResponse {
   public_id: string; // Always use public_id in API responses
   message: string;
+  state?: CapsuleState; // Initial state (default: "draft")
   email?: string;
 }
 

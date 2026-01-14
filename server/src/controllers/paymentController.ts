@@ -6,19 +6,35 @@ import { createPaymentIntentSchema } from '../validation/capsuleSchemas.js';
 import { canProcessPayment } from '../utils/stateMachine.js';
 import { updateCapsulePaymentStatus } from './capsuleController.js';
 
-// Initialize Stripe
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2024-12-18.acacia',
-});
+// Initialize Stripe (only if key is provided)
+const stripe = process.env.STRIPE_SECRET_KEY 
+  ? new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2024-12-18.acacia',
+    })
+  : null;
 
 /**
  * Create payment intent for a capsule
  */
 export const createPaymentIntent = asyncHandler(async (req: Request, res: Response) => {
+  if (!stripe) {
+    const error = new Error('Stripe is not configured. Please set STRIPE_SECRET_KEY.') as Error & { statusCode?: number };
+    error.statusCode = 500;
+    throw error;
+  }
+
   // Validate input
   const validationResult = createPaymentIntentSchema.safeParse(req.body);
   if (!validationResult.success) {
-    const error = new Error(`Validation failed: ${validationResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`) as Error & { statusCode?: number };
+    // Safe error message extraction
+    const errorMessages = validationResult.error.errors 
+      ? validationResult.error.errors.map(e => {
+          const path = Array.isArray(e.path) ? e.path.join('.') : String(e.path || '');
+          return `${path}: ${e.message}`;
+        }).join(', ')
+      : validationResult.error.message || 'Validation failed';
+    
+    const error = new Error(`Validation failed: ${errorMessages}`) as Error & { statusCode?: number };
     error.statusCode = 400;
     throw error;
   }
@@ -36,7 +52,14 @@ export const createPaymentIntent = asyncHandler(async (req: Request, res: Respon
   }
 
   const capsule = capsuleResult.rows[0];
-  const state = capsule.state;
+  let state = capsule.state;
+
+  // If capsule is in draft state, transition to pending_payment
+  if (state === 'draft') {
+    const updateQuery = 'UPDATE capsules SET state = $1 WHERE public_id = $2 RETURNING state';
+    const updateResult = await pool.query(updateQuery, ['pending_payment', public_id]);
+    state = updateResult.rows[0].state;
+  }
 
   // Verify capsule can accept payment
   if (!canProcessPayment(state)) {
@@ -62,6 +85,13 @@ export const createPaymentIntent = asyncHandler(async (req: Request, res: Respon
     },
   });
 
+  // Update capsule with payment_intent_id (but not state yet - state changes on webhook)
+  // Store payment_id for reference
+  await pool.query(
+    'UPDATE capsules SET payment_id = $1 WHERE public_id = $2',
+    [paymentIntent.id, public_id]
+  );
+
   res.json({
     client_secret: paymentIntent.client_secret,
     payment_intent_id: paymentIntent.id,
@@ -71,10 +101,88 @@ export const createPaymentIntent = asyncHandler(async (req: Request, res: Respon
 });
 
 /**
+ * Confirm a payment intent (for testing purposes only)
+ * Uses Stripe test payment method tokens for safe testing
+ * SECURITY: Only available in development/test mode
+ */
+export const confirmPaymentIntent = asyncHandler(async (req: Request, res: Response) => {
+  // Security: Only allow in development/test mode
+  if (process.env.NODE_ENV === 'production') {
+    const error = new Error('This endpoint is not available in production') as Error & { statusCode?: number };
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (!stripe) {
+    const error = new Error('Stripe is not configured. Please set STRIPE_SECRET_KEY.') as Error & { statusCode?: number };
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const { payment_intent_id } = req.body;
+
+  if (!payment_intent_id) {
+    const error = new Error('payment_intent_id is required') as Error & { statusCode?: number };
+    error.statusCode = 400;
+    throw error;
+  }
+
+  try {
+    // Retrieve payment intent
+    const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
+
+    // Check if already succeeded
+    if (paymentIntent.status === 'succeeded') {
+      return res.json({
+        message: 'Payment intent already succeeded',
+        payment_intent_id: paymentIntent.id,
+        status: paymentIntent.status,
+      });
+    }
+
+    // For test mode: use Stripe test payment method token
+    // This is a safe way to test without exposing card data
+    const testPaymentMethodId = 'pm_card_visa'; // Stripe test token for Visa card
+
+    // Attach test payment method to payment intent
+    await stripe.paymentIntents.update(paymentIntent.id, {
+      payment_method: testPaymentMethodId,
+    });
+
+    // Confirm payment intent with return_url (required for redirect-based payment methods)
+    const confirmedIntent = await stripe.paymentIntents.confirm(paymentIntent.id, {
+      return_url: 'https://example.com/return', // Required for some payment methods
+    });
+
+    res.json({
+      message: 'Payment intent confirmed',
+      payment_intent_id: confirmedIntent.id,
+      status: confirmedIntent.status,
+      client_secret: confirmedIntent.client_secret,
+    });
+  } catch (error: any) {
+    // Handle Stripe errors
+    const errorMessage = error.type 
+      ? `Stripe error (${error.type}): ${error.message}`
+      : `Failed to confirm payment intent: ${error.message}`;
+    
+    const err = new Error(errorMessage) as Error & { statusCode?: number };
+    err.statusCode = error.statusCode || 400;
+    throw err;
+  }
+});
+
+/**
  * Handle Stripe webhook events
  * Verifies signature and processes payment events with idempotency
  */
 export const handleStripeWebhook = asyncHandler(async (req: Request, res: Response) => {
+  if (!stripe) {
+    const error = new Error('Stripe is not configured. Please set STRIPE_SECRET_KEY.') as Error & { statusCode?: number };
+    error.statusCode = 500;
+    throw error;
+  }
+
   const sig = req.headers['stripe-signature'];
 
   if (!sig) {
@@ -117,8 +225,20 @@ export const handleStripeWebhook = asyncHandler(async (req: Request, res: Respon
     const capsulePublicId = paymentIntent.metadata.capsule_public_id;
 
     if (!capsulePublicId) {
-      console.error('Payment intent missing capsule_public_id metadata');
-      return res.status(400).json({ error: 'Missing capsule metadata' });
+      // Event for payment intent without our metadata (test events, etc.)
+      // Log but don't fail - return 200 to acknowledge receipt
+      console.log(`Payment intent ${paymentIntent.id} succeeded but missing capsule metadata (ignoring)`);
+      // Still record event for idempotency
+      try {
+        await pool.query(
+          'INSERT INTO webhook_events (stripe_event_id) VALUES ($1) ON CONFLICT DO NOTHING',
+          [event.id]
+        );
+      } catch (err) {
+        // Log but don't fail
+        console.error('Failed to record webhook event:', err);
+      }
+      return res.json({ received: true, ignored: true, reason: 'Missing capsule metadata' });
     }
 
     // Get capsule internal ID

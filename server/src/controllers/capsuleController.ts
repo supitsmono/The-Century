@@ -13,7 +13,15 @@ export const createCapsule = asyncHandler(async (req: Request<{}, CapsuleRespons
   // Validate input with Zod
   const validationResult = createCapsuleRequestSchema.safeParse(req.body);
   if (!validationResult.success) {
-    const error = new Error(`Validation failed: ${validationResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`) as Error & { statusCode?: number };
+    // Safe error message extraction
+    const errorMessages = validationResult.error.errors 
+      ? validationResult.error.errors.map(e => {
+          const path = Array.isArray(e.path) ? e.path.join('.') : String(e.path || '');
+          return `${path}: ${e.message}`;
+        }).join(', ')
+      : validationResult.error.message || 'Validation failed';
+    
+    const error = new Error(`Validation failed: ${errorMessages}`) as Error & { statusCode?: number };
     error.statusCode = 400;
     throw error;
   }
@@ -23,16 +31,41 @@ export const createCapsule = asyncHandler(async (req: Request<{}, CapsuleRespons
   const state: CapsuleState = getInitialState(); // 'draft'
 
   // Convert openAt Date to TIMESTAMPTZ
-  const openAt = capsule.openAt || new Date('2125-01-01T00:00:00Z');
+  const openAt = capsule.openAt ? new Date(capsule.openAt) : new Date('2125-01-01T00:00:00Z');
+  
+  // Calculate ageAtCreation if not provided (from dob to today)
+  let ageAtCreation = capsule.ageAtCreation;
+  if (!ageAtCreation && capsule.dob) {
+    const dob = new Date(capsule.dob);
+    const today = new Date();
+    ageAtCreation = today.getFullYear() - dob.getFullYear();
+    const monthDiff = today.getMonth() - dob.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) {
+      ageAtCreation--;
+    }
+  }
+  // Default to 0 if still not set
+  ageAtCreation = ageAtCreation ?? 0;
+  
+  // Extract archival date components for legacy columns (required by schema)
+  const archivalYear = openAt.getUTCFullYear();
+  const archivalMonth = ['January', 'February', 'March', 'April', 'May', 'June', 
+                          'July', 'August', 'September', 'October', 'November', 'December'][openAt.getUTCMonth()];
+  const archivalDay = openAt.getUTCDate();
+  const archivalTime = `${String(openAt.getUTCHours()).padStart(2, '0')}:${String(openAt.getUTCMinutes()).padStart(2, '0')}`;
 
   const query = `
     INSERT INTO capsules (
       public_id, name, country, town, dob, message, photos, video,
-      age_at_creation, open_at, state, email, created_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-    RETURNING public_id
+      photos_paths, video_path,
+      age_at_creation, archival_year, archival_month, archival_day, archival_time,
+      open_at, state, email, created_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+    RETURNING public_id, state
   `;
 
+  // Phase 2: Don't store base64 photos/video, use storage paths instead
+  // Legacy fields (photos, video) are kept empty for new capsules
   const values = [
     public_id,
     capsule.name || null,
@@ -40,9 +73,15 @@ export const createCapsule = asyncHandler(async (req: Request<{}, CapsuleRespons
     capsule.town,
     capsule.dob,
     capsule.message,
-    capsule.photos || [],
-    capsule.video || null,
-    capsule.ageAtCreation,
+    [], // photos: DEPRECATED - Phase 2 uses photos_paths via media endpoints
+    null, // video: DEPRECATED - Phase 2 uses video_path via media endpoints
+    [], // photos_paths: Start empty, populated via media endpoints
+    null, // video_path: Start empty, populated via media endpoints
+    ageAtCreation,
+    archivalYear,
+    archivalMonth,
+    archivalDay,
+    archivalTime,
     openAt,
     state,
     email || null,
@@ -50,11 +89,12 @@ export const createCapsule = asyncHandler(async (req: Request<{}, CapsuleRespons
   ];
 
   const result = await pool.query(query, values);
-  const returned_public_id = result.rows[0].public_id;
+  const row = result.rows[0];
 
   res.status(201).json({
-    public_id: returned_public_id,
+    public_id: row.public_id,
     message: 'Capsule created successfully',
+    state: row.state, // Return initial state: "draft"
     ...(email && { email })
   });
 });
@@ -85,8 +125,12 @@ export const getCapsule = asyncHandler(async (req: Request<{ public_id: string }
     town: row.town,
     dob: row.dob,
     message: row.message,
-    photos: row.photos || [],
-    video: row.video,
+    photos: row.photos || [], // DEPRECATED: Legacy base64, use photos_paths
+    photos_paths: row.photos_paths || [], // Phase 2: Storage paths
+    photos_meta: row.photos_meta ? (typeof row.photos_meta === 'string' ? JSON.parse(row.photos_meta) : row.photos_meta) : undefined,
+    video: row.video, // DEPRECATED: Legacy base64, use video_path
+    video_path: row.video_path || undefined, // Phase 2: Storage path
+    video_meta: row.video_meta ? (typeof row.video_meta === 'string' ? JSON.parse(row.video_meta) : row.video_meta) : undefined,
     createdAt: row.created_at,
     ageAtCreation: row.age_at_creation,
     openAt: row.open_at,

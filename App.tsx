@@ -13,7 +13,6 @@ const App: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [timeLeft, setTimeLeft] = useState<TimeLeft | null>(null);
-  const [userCapsule, setUserCapsule] = useState<Capsule | null>(null);
   const [liveCount, setLiveCount] = useState(142829);
   
   const mouseX = useMotionValue(0);
@@ -29,23 +28,6 @@ const App: React.FC = () => {
   const scaleX = useSpring(scrollYProgress, { stiffness: 100, damping: 30, restDelta: 0.001 });
 
   useEffect(() => {
-    try {
-    const saved = localStorage.getItem('the_century_capsule');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object' && parsed.name) {
-          setUserCapsule(parsed);
-        }
-      }
-    } catch (err) {
-      console.error("Failed to load capsule from localStorage:", err);
-      try {
-        localStorage.removeItem('the_century_capsule');
-      } catch (e) {
-        // Ignore cleanup errors
-      }
-    }
-    
     const interval = setInterval(() => {
       setLiveCount(prev => prev + Math.floor(Math.random() * 2));
     }, 4500);
@@ -81,14 +63,11 @@ const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [location.pathname]);
 
+  // Phase 3A: localStorage removed, navigation handled by wizard
+  // This callback is kept for Phase 3C (payment flow) compatibility
   const handleCapsuleCreated = (capsule: Capsule) => {
-    setUserCapsule(capsule);
-    try {
-    localStorage.setItem('the_century_capsule', JSON.stringify(capsule));
-    } catch (err) {
-      console.error("Failed to save capsule to localStorage:", err);
-    }
-    navigate('/vault');
+    // For Phase 3A: navigation is handled by wizard, this is a no-op
+    // Phase 3C will use this for payment completion flow
   };
 
   // Determine active view from location

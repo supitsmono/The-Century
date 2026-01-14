@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Play, Pause, Lock, Fingerprint, ArrowLeft } from 'lucide-react';
+import { Play, Pause, Lock, Fingerprint, ArrowLeft, Upload, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { StepShell } from '../ui/StepShell';
 import { VideoViewer } from '../ui/VideoViewer';
 import { containerVariants, itemVariants, getReducedMotionTransition } from '../data/variants';
+import { uploadPhotos, uploadVideo, UploadStatus, LocalPhotoItem, LocalVideoItem } from '../../../lib/mediaUpload';
+import { LocalPhoto, LocalVideo } from '../hooks/useWizardState';
 
 interface Step5ReviewProps {
   formData: {
@@ -15,6 +17,13 @@ interface Step5ReviewProps {
   dobDay: string;
   dobMonth: string;
   dobYear: string;
+  // Phase 3B: New state structure
+  photosLocal: LocalPhoto[];
+  videoLocal: LocalVideo | null;
+  photosPaths: string[];
+  videoPath: string | null;
+  effectiveCapsuleId: string | null;
+  // Deprecated: Keep for backward compatibility (read-only)
   photos: string[];
   videoBlobUrl: string | null;
   videoBase64: string | null;
@@ -34,6 +43,9 @@ interface Step5ReviewProps {
   isSubmitting: boolean;
   reviewVideoRef: React.RefObject<HTMLVideoElement>;
   onViewerOpenChange?: (isOpen: boolean) => void;
+  // Phase 3B: Actions for updating uploaded paths
+  onPhotosUploaded: (paths: string[]) => void;
+  onVideoUploaded: (path: string | null) => void;
 }
 
 export const Step5Review: React.FC<Step5ReviewProps> = ({
@@ -41,6 +53,11 @@ export const Step5Review: React.FC<Step5ReviewProps> = ({
   dobDay,
   dobMonth,
   dobYear,
+  photosLocal,
+  videoLocal,
+  photosPaths,
+  videoPath,
+  effectiveCapsuleId,
   photos,
   videoBlobUrl,
   videoBase64,
@@ -55,13 +72,149 @@ export const Step5Review: React.FC<Step5ReviewProps> = ({
   isSubmitting,
   reviewVideoRef,
   onViewerOpenChange,
+  onPhotosUploaded,
+  onVideoUploaded,
 }) => {
   const [isVideoViewerOpen, setIsVideoViewerOpen] = useState(false);
+  
+  // Phase 3B: Upload statuses (local component state, not wizard state)
+  const [photoStatusById, setPhotoStatusById] = useState<Record<string, UploadStatus>>({});
+  const [videoStatus, setVideoStatus] = useState<UploadStatus | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  
+  // Ref guard for double-click protection (bulletproof race condition prevention)
+  const isUploadingRef = useRef(false);
+  
+  // Mount guard: prevent state updates after component unmounts
+  const isMountedRef = useRef(true);
+  
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+  
+  // Phase 3B: Upload handler
+  const handleUploadMedia = useCallback(async () => {
+    // Early return guard: prevent double-click/race conditions
+    if (isUploadingRef.current) return;
+    if (!effectiveCapsuleId) {
+      setUploadError('Capsule ID missing. Please go back to step 4 to create your capsule.');
+      return;
+    }
+    
+    isUploadingRef.current = true;
+    setIsUploading(true);
+    setUploadError(null);
+    
+    try {
+      // Upload photos (only failed ones, or all if none uploaded yet)
+      const photosToUpload: LocalPhotoItem[] = photosLocal.filter(photo => {
+        const status = photoStatusById[photo.id];
+        return !status || status === 'failed';
+      }).map(photo => ({
+        file: photo.file,
+        previewUrl: photo.previewUrl,
+        id: photo.id,
+      }));
+      
+      if (photosToUpload.length > 0) {
+        const photoResult = await uploadPhotos(
+          effectiveCapsuleId,
+          photosToUpload,
+          photosPaths, // Existing paths for idempotency
+          {
+            onStatus: (id, status) => {
+              if (isMountedRef.current) {
+                setPhotoStatusById(prev => ({ ...prev, [id]: status }));
+              }
+            },
+            onError: (id, error) => {
+              console.error(`Photo upload failed for ${id}:`, error);
+              if (isMountedRef.current) {
+                setPhotoStatusById(prev => ({ ...prev, [id]: 'failed' }));
+              }
+            },
+            // onOverall: only for UI state (labels), not for paths processing
+            // Paths are processed AFTER await (see below)
+          }
+        );
+        
+        // Update wizard state with new paths (AFTER await, when result exists)
+        if (isMountedRef.current && photoResult.paths.length > 0) {
+          const allPaths = [...photosPaths, ...photoResult.paths];
+          onPhotosUploaded(allPaths);
+        }
+        
+        if (isMountedRef.current && photoResult.failures && photoResult.failures.length > 0) {
+          setUploadError(`Some photos failed to upload. ${photoResult.failures.length} failed.`);
+        }
+      }
+      
+      // Upload video (only if not already uploaded and local exists)
+      if (videoLocal && !videoPath) {
+        const videoToUpload: LocalVideoItem = {
+          file: videoLocal.file,
+          previewUrl: videoLocal.previewUrl,
+          id: videoLocal.id,
+        };
+        const videoResult = await uploadVideo(
+          effectiveCapsuleId,
+          videoToUpload,
+          videoPath, // Existing path for idempotency
+          {
+            onStatus: (id, status) => {
+              if (isMountedRef.current) {
+                setVideoStatus(status);
+              }
+            },
+            onError: (id, error) => {
+              console.error(`Video upload failed:`, error);
+              if (isMountedRef.current) {
+                setVideoStatus('failed');
+              }
+            },
+            // onOverall: only for UI state (labels), not for paths processing
+            // Path is processed AFTER await (see below)
+          }
+        );
+        
+        // Update wizard state with video path (AFTER await, when result exists)
+        if (isMountedRef.current && videoResult.path) {
+          onVideoUploaded(videoResult.path);
+        }
+        
+        if (isMountedRef.current && videoResult.error) {
+          setUploadError(`Video upload failed: ${videoResult.error.message}`);
+        }
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      if (isMountedRef.current) {
+        setUploadError(error instanceof Error ? error.message : 'Upload failed. Please try again.');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsUploading(false);
+      }
+      isUploadingRef.current = false; // Reset ref guard (always, even if unmounted)
+    }
+  }, [effectiveCapsuleId, photosLocal, photosPaths, videoLocal, videoPath, photoStatusById, onPhotosUploaded, onVideoUploaded]);
+  
+  // Determine effective media for display (local previews + backend paths)
+  const effectivePhotos = photosLocal.map(p => p.previewUrl);
+  const effectiveVideoUrl = videoLocal?.previewUrl || videoBlobUrl;
+  
+  // Count uploaded media
+  const uploadedPhotoCount = photosPaths.length;
+  const hasUploadedVideo = !!videoPath;
 
   return (
     <>
       <VideoViewer 
-        videoUrl={isVideoViewerOpen ? videoBlobUrl : null}
+        videoUrl={isVideoViewerOpen ? effectiveVideoUrl : null}
         onClose={() => setIsVideoViewerOpen(false)}
         onViewerOpenChange={onViewerOpenChange}
       />
@@ -208,28 +361,104 @@ export const Step5Review: React.FC<Step5ReviewProps> = ({
             <div style={{ gap: '1.5rem', display: 'flex', flexDirection: 'column' }}>
               <div className="flex justify-between items-center">
                 <span className="text-[8px] uppercase tracking-[0.35em] font-black text-[#64748B]" style={{ lineHeight: 1.5, letterSpacing: '0.08em' }}>Artifacts</span>
-                <span className="text-[9px] font-black text-[#1E293B] uppercase tracking-[0.25em]" style={{ opacity: 1, lineHeight: 1.5 }}>
-                  {photos.length} {photos.length === 1 ? 'Photo' : 'Photos'} {videoBase64 ? '• 1 Video' : ''}
-                </span>
+                <div className="flex items-center" style={{ gap: '0.75rem' }}>
+                  <span className="text-[9px] font-black text-[#1E293B] uppercase tracking-[0.25em]" style={{ opacity: 1, lineHeight: 1.5 }}>
+                    {effectivePhotos.length} {effectivePhotos.length === 1 ? 'Photo' : 'Photos'} {effectiveVideoUrl ? '• 1 Video' : ''}
+                  </span>
+                  {(uploadedPhotoCount > 0 || hasUploadedVideo) && (
+                    <span className="text-[8px] font-black text-[#059669] uppercase tracking-[0.20em] flex items-center" style={{ gap: '0.25rem' }}>
+                      <CheckCircle2 size={10} />
+                      Uploaded
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="flex flex-wrap items-center" style={{ gap: '1rem' }}>
-                {photos.slice(0, 5).map((src, i) => (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0, scale: 0.9, y: 10 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    transition={{ delay: 0.1 + i * 0.05, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                    whileHover={{ scale: 1.1, zIndex: 10, rotate: -2, y: -4 }}
-                    onClick={() => onPhotoSelect(src)}
-                    className="w-20 h-20 md:w-24 md:h-24 bg-[#F7F5F0] border border-[#D4C9BC] overflow-hidden cursor-zoom-in group rounded-sm"
-                    style={{
-                      boxShadow: '0 2px 6px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
-                    }}
+              
+              {/* Guard message if no capsule ID */}
+              {!effectiveCapsuleId && (
+                <div className="bg-[#FEF3C7] border border-[#F59E0B] rounded-sm p-3">
+                  <p className="text-[9px] font-black text-[#B45309] uppercase tracking-[0.20em]" style={{ lineHeight: 1.5 }}>
+                    ⚠️ Make your capsule first via step 4 before uploading media.
+                  </p>
+                </div>
+              )}
+              
+              {/* Upload button */}
+              {effectiveCapsuleId && (effectivePhotos.length > 0 || effectiveVideoUrl) && (
+                <div className="flex items-center" style={{ gap: '0.75rem' }}>
+                  <motion.button
+                    onClick={handleUploadMedia}
+                    disabled={isUploading || (uploadedPhotoCount >= effectivePhotos.length && hasUploadedVideo)}
+                    className={`flex items-center text-[9px] uppercase tracking-[0.30em] font-black rounded-sm transition-all duration-200 ${
+                      isUploading || (uploadedPhotoCount >= effectivePhotos.length && hasUploadedVideo)
+                        ? 'bg-[#94A3B8] text-white cursor-not-allowed opacity-70'
+                        : 'bg-[#1E293B] text-white hover:opacity-92 cursor-pointer'
+                    }`}
+                    style={{ padding: '0.5rem 1rem', gap: '0.5rem' }}
+                    whileHover={isUploading || (uploadedPhotoCount >= effectivePhotos.length && hasUploadedVideo) ? {} : { scale: 1.02 }}
+                    whileTap={isUploading || (uploadedPhotoCount >= effectivePhotos.length && hasUploadedVideo) ? {} : { scale: 0.98 }}
                   >
-                    <img src={src} alt={`Photo ${i + 1}`} className="w-full h-full object-cover grayscale-[20%] group-hover:grayscale-0 transition-all duration-500 ease-out" />
-                  </motion.div>
-                ))}
-                {photos.length > 5 && (
+                    {isUploading ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        <span>Uploading...</span>
+                      </>
+                    ) : uploadedPhotoCount >= effectivePhotos.length && hasUploadedVideo ? (
+                      <>
+                        <CheckCircle2 size={12} />
+                        <span>Uploaded</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload size={12} />
+                        <span>Upload Media</span>
+                      </>
+                    )}
+                  </motion.button>
+                  {uploadError && (
+                    <span className="text-[8px] font-black text-[#DC2626] uppercase tracking-[0.20em]" style={{ lineHeight: 1.5 }}>
+                      {uploadError}
+                    </span>
+                  )}
+                </div>
+              )}
+              
+              <div className="flex flex-wrap items-center" style={{ gap: '1rem' }}>
+                {effectivePhotos.slice(0, 5).map((src, i) => {
+                  const photo = photosLocal[i];
+                  const status = photo ? photoStatusById[photo.id] : null;
+                  const isUploaded = photo && photosPaths.some(path => path.includes(photo.id) || i < uploadedPhotoCount);
+                  
+                  return (
+                    <motion.div
+                      key={photo?.id || i}
+                      initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      transition={{ delay: 0.1 + i * 0.05, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                      whileHover={{ scale: 1.1, zIndex: 10, rotate: -2, y: -4 }}
+                      onClick={() => onPhotoSelect(src)}
+                      className="relative w-20 h-20 md:w-24 md:h-24 bg-[#F7F5F0] border border-[#D4C9BC] overflow-hidden cursor-zoom-in group rounded-sm"
+                      style={{
+                        boxShadow: '0 2px 6px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
+                      }}
+                    >
+                      <img src={src} alt={`Photo ${i + 1}`} className="w-full h-full object-cover grayscale-[20%] group-hover:grayscale-0 transition-all duration-500 ease-out" />
+                      {/* Status indicator */}
+                      {status && (
+                        <div className="absolute top-1 right-1 z-10">
+                          {status === 'finalized' || isUploaded ? (
+                            <CheckCircle2 size={12} className="text-[#059669]" fill="white" />
+                          ) : status === 'failed' ? (
+                            <XCircle size={12} className="text-[#DC2626]" fill="white" />
+                          ) : status === 'uploading' ? (
+                            <Loader2 size={12} className="text-[#1E293B] animate-spin" />
+                          ) : null}
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })}
+                {effectivePhotos.length > 5 && (
                   <motion.div
                     initial={{ opacity: 0, scale: 0.9, y: 10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -239,10 +468,10 @@ export const Step5Review: React.FC<Step5ReviewProps> = ({
                       boxShadow: '0 2px 6px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
                     }}
                   >
-                    <span className="text-sm font-black text-[#64748B]" style={{ lineHeight: 1.5 }}>+{photos.length - 5}</span>
+                    <span className="text-sm font-black text-[#64748B]" style={{ lineHeight: 1.5 }}>+{effectivePhotos.length - 5}</span>
                   </motion.div>
                 )}
-                {videoBlobUrl && (
+                {effectiveVideoUrl && (
                   <motion.div
                     initial={{ opacity: 0, scale: 0.9, y: 10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -257,7 +486,7 @@ export const Step5Review: React.FC<Step5ReviewProps> = ({
                   >
                     <video
                       ref={reviewVideoRef}
-                      src={videoBlobUrl || undefined}
+                      src={effectiveVideoUrl || undefined}
                       className="w-full h-full object-cover opacity-70 group-hover:opacity-90 transition-opacity duration-300"
                       muted
                       loop={false}
@@ -268,6 +497,18 @@ export const Step5Review: React.FC<Step5ReviewProps> = ({
                         <Play size={16} fill="white" className="ml-0.5" />
                       </div>
                     </div>
+                    {/* Video status indicator */}
+                    {videoStatus && (
+                      <div className="absolute top-1 right-1 z-10">
+                        {videoStatus === 'finalized' || hasUploadedVideo ? (
+                          <CheckCircle2 size={12} className="text-[#059669]" fill="white" />
+                        ) : videoStatus === 'failed' ? (
+                          <XCircle size={12} className="text-[#DC2626]" fill="white" />
+                        ) : videoStatus === 'uploading' ? (
+                          <Loader2 size={12} className="text-white animate-spin" />
+                        ) : null}
+                      </div>
+                    )}
                   </motion.div>
                 )}
               </div>

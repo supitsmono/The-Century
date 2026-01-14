@@ -5,8 +5,9 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { capsuleRoutes } from './routes/capsules.js';
 import { paymentRoutes } from './routes/payments.js';
 import { emailRoutes } from './routes/emails.js';
+import { mediaRoutes } from './routes/media.js';
 
-// Load environment variables
+// Load environment variables from project root
 dotenv.config();
 
 const app = express();
@@ -50,6 +51,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Routes
 app.use('/api/capsules', capsuleRoutes);
+app.use('/api/capsules/media', mediaRoutes); // Media routes (photos/video) - public_id in body
 app.use('/api/payments', paymentRoutes);
 app.use('/api/emails', emailRoutes);
 
