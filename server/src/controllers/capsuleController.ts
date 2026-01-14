@@ -251,3 +251,44 @@ export const sealCapsule = asyncHandler(async (req: Request<{ public_id: string 
     state: updateResult.rows[0].state
   });
 });
+
+/**
+ * Reset capsule to draft state (e.g., after payment cancellation)
+ * Allows user to retry payment
+ */
+export const resetCapsuleToDraft = asyncHandler(async (req: Request<{ public_id: string }>, res: Response) => {
+  const { public_id } = req.params;
+
+  // Get current state
+  const getStateQuery = 'SELECT state FROM capsules WHERE public_id = $1';
+  const stateResult = await pool.query(getStateQuery, [public_id]);
+
+  if (stateResult.rows.length === 0) {
+    const error = new Error('Capsule not found') as Error & { statusCode?: number };
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const currentState = stateResult.rows[0].state as CapsuleState;
+  const newState: CapsuleState = 'draft';
+
+  // Only allow reset from pending_payment (payment cancelled/failed)
+  if (currentState !== 'pending_payment') {
+    const error = new Error(`Cannot reset capsule from ${currentState} to draft. Only allowed from pending_payment.`) as Error & { statusCode?: number };
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validate transition
+  validateTransition(currentState, newState);
+
+  // Update state and clear payment_id
+  const updateQuery = 'UPDATE capsules SET state = $1, payment_id = NULL WHERE public_id = $2 RETURNING public_id, state';
+  const updateResult = await pool.query(updateQuery, [newState, public_id]);
+
+  res.json({ 
+    message: 'Capsule reset to draft',
+    public_id: updateResult.rows[0].public_id,
+    state: updateResult.rows[0].state
+  });
+});

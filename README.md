@@ -1,20 +1,132 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# The Century - Time Capsule Application
 
-# Run and deploy your AI Studio app
+A time capsule application where users can create sealed capsules with photos, videos, and messages that will be opened in 100 years.
 
-This contains everything you need to run your app locally.
+## 🚀 Quick Start
 
-View your app in AI Studio: https://ai.studio/apps/drive/1zG-gGtx5_lZ5WqddKEYM8kBt3V-sgscw
+### Prerequisites
+- Node.js 18+
+- PostgreSQL database (Supabase recommended)
+- Supabase account (for storage)
+- Stripe account (for payments)
 
-## Run Locally
-
-**Prerequisites:**  Node.js
-
+### Frontend Setup
 
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+   ```bash
+   npm install
+   ```
+
+2. Create `.env.local` file:
+   ```env
+   VITE_SUPABASE_URL=https://your-project.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-key
+   VITE_SUPABASE_BUCKET=capsules
+   ```
+
+3. Run development server:
+   ```bash
+   npm run dev
+   ```
+
+   Frontend runs on `http://localhost:5173` (or port from Vite config)
+
+### Backend Setup
+
+See [server/README.md](./server/README.md) for detailed backend setup instructions.
+
+**Quick setup:**
+1. Set up PostgreSQL database (Supabase recommended)
+2. Run migrations:
+   - `server/src/db/migration_001_phase1.sql`
+   - `server/src/db/migration_002_phase2.sql`
+3. Set up Supabase Storage:
+   - Create bucket `capsules` (private)
+   - Run `server/src/db/storage_policies_route_a.sql` in Supabase SQL Editor
+4. Create `.env` file in project root:
+   ```env
+   # Database
+   DATABASE_URL=postgresql://user:password@host:port/database
+   
+   # Supabase Storage
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+   SUPABASE_BUCKET=capsules
+   
+   # Stripe
+   STRIPE_SECRET_KEY=sk_test_...
+   STRIPE_WEBHOOK_SECRET=whsec_...
+   
+   # Server
+   PORT=5001
+   NODE_ENV=development
+   ```
+
+5. Start backend server:
+   ```bash
+   npm run server
+   ```
+
+   Backend runs on `http://localhost:5001` by default
+
+## 📁 Project Structure
+
+```
+the-century/
+├── components/          # React components
+│   └── seal/           # Capsule wizard components
+├── lib/                # Frontend utilities
+│   ├── api.ts          # API client
+│   ├── mediaUpload.ts  # Media upload helper
+│   └── supabase.ts     # Supabase client
+├── server/             # Backend Express server
+│   └── src/
+│       ├── controllers/  # Route handlers
+│       ├── db/          # Database migrations & policies
+│       ├── routes/      # API routes
+│       └── services/    # Business logic
+└── scripts/            # Utility scripts
+```
+
+## 🧪 Testing
+
+### Phase 3B: Media Uploads
+
+**Release Gate:** Run before deploying Phase 3C
+```bash
+npm run test:phase3b
+```
+
+**Expected:** 9/9 tests passed
+- All uploads working
+- Policy correctly blocks invalid uploads
+
+See [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) for full checklist.
+
+## 📚 Documentation
+
+- [Backend Server README](./server/README.md) - Backend API documentation
+- [Storage Policies](./server/src/db/storage_policies_route_a.sql) - Supabase Storage RLS policies
+
+## 🛠️ Development
+
+- `npm run dev` - Start frontend dev server
+- `npm run server` - Start backend dev server
+- `npm run build` - Build frontend for production
+- `npm run server:build` - Build backend TypeScript
+
+## 📝 Environment Variables
+
+### Frontend (.env.local)
+- `VITE_SUPABASE_URL` - Supabase project URL
+- `VITE_SUPABASE_ANON_KEY` - Supabase anonymous key
+- `VITE_SUPABASE_BUCKET` - Storage bucket name (default: `capsules`)
+
+### Backend (.env)
+- `DATABASE_URL` - PostgreSQL connection string
+- `SUPABASE_URL` - Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY` - Supabase service role key
+- `SUPABASE_BUCKET` - Storage bucket name
+- `STRIPE_SECRET_KEY` - Stripe secret key
+- `STRIPE_WEBHOOK_SECRET` - Stripe webhook secret
+- `PORT` - Server port (default: 5001)

@@ -603,6 +603,21 @@ export const CapsuleWizard: React.FC<CapsuleWizardProps> = ({ onClose, onSuccess
                 onVideoUploaded={(path) => {
                   actions.setUploadedVideoPath(path);
                 }}
+                // Phase 3C: Navigate to Step 6 after sealing
+                onNavigateToStep6={async () => {
+                  if (!effectiveCapsuleId) return;
+                  try {
+                    // Load sealed capsule from backend
+                    const backendCapsule = await getCapsule(effectiveCapsuleId);
+                    const uiCapsule = mapBackendToUI(backendCapsule);
+                    actions.setFinalCapsule(uiCapsule);
+                    onSuccess(uiCapsule);
+                    handleStepChange(6);
+                  } catch (error) {
+                    console.error('Failed to load sealed capsule:', error);
+                    actions.setErrorMessage('Failed to load capsule. Please refresh the page.');
+                  }
+                }}
               />
             )}
             {state.step === 6 && state.finalCapsule && (

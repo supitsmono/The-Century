@@ -24,9 +24,24 @@ export const createCapsuleRequestSchema = z.object({
   email: z.string().email().optional()
 });
 
-// Payment intent creation schema
+// Payment intent creation schema (deprecated - use createCheckoutSessionSchema)
 // Accept both public_id and capsulePublicId for compatibility
 export const createPaymentIntentSchema = z.object({
+  public_id: z.string().uuid().optional(),
+  capsulePublicId: z.string().uuid().optional(),
+  amount: z.number().int().positive().optional(), // Optional, can default on backend
+  currency: z.string().length(3).default('eur')
+}).refine((data) => data.public_id || data.capsulePublicId, {
+  message: "Either 'public_id' or 'capsulePublicId' is required",
+  path: ["public_id"]
+}).transform((data) => ({
+  public_id: data.public_id || data.capsulePublicId!,
+  amount: data.amount,
+  currency: data.currency
+}));
+
+// Checkout session creation schema (Phase 3C: Stripe Checkout)
+export const createCheckoutSessionSchema = z.object({
   public_id: z.string().uuid().optional(),
   capsulePublicId: z.string().uuid().optional(),
   amount: z.number().int().positive().optional(), // Optional, can default on backend
@@ -50,3 +65,4 @@ export const paymentUpdateSchema = z.object({
 export type CapsuleInput = z.infer<typeof capsuleSchema>;
 export type CreateCapsuleRequestInput = z.infer<typeof createCapsuleRequestSchema>;
 export type CreatePaymentIntentInput = z.infer<typeof createPaymentIntentSchema>;
+export type CreateCheckoutSessionInput = z.infer<typeof createCheckoutSessionSchema>;

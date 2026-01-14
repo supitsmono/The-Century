@@ -13,12 +13,21 @@ async function handleResponse<T>(response: Response): Promise<T> {
     let errorMessage = `Request failed: ${response.status} ${response.statusText}`;
     try {
       const errorData = await response.json();
-      errorMessage = errorData.error?.message || errorData.message || errorMessage;
+      // Try multiple paths for error message
+      errorMessage = errorData.error?.message || errorData.message || errorData.error || errorMessage;
+      
+      // Log full error for debugging
+      if (response.status === 400) {
+        console.error('API Error (400):', errorData);
+      }
     } catch {
       // If response is not JSON, try to get text
       try {
         const errorText = await response.text();
-        if (errorText) errorMessage = errorText;
+        if (errorText) {
+          errorMessage = errorText;
+          console.error('API Error (text):', errorText);
+        }
       } catch {
         // Use default error message
       }
@@ -215,11 +224,64 @@ export interface CreatePaymentIntentResponse {
 }
 
 /**
- * Create payment intent for a capsule
+ * Create payment intent for a capsule (deprecated - use createCheckoutSession)
  */
 export async function createPaymentIntent(payload: CreatePaymentIntentPayload): Promise<CreatePaymentIntentResponse> {
   return request<CreatePaymentIntentResponse>('/api/payments/create-intent', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export interface CreateCheckoutSessionPayload {
+  public_id: string;
+  amount?: number; // Optional, defaults on backend
+  currency?: string; // Optional, defaults to 'eur'
+}
+
+export interface CreateCheckoutSessionResponse {
+  session_id: string;
+  url: string;
+  public_id: string;
+}
+
+/**
+ * Create Stripe Checkout session for a capsule (Phase 3C)
+ * Returns checkout URL to redirect user to Stripe
+ */
+export async function createCheckoutSession(payload: CreateCheckoutSessionPayload): Promise<CreateCheckoutSessionResponse> {
+  return request<CreateCheckoutSessionResponse>('/api/payments/create-checkout-session', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface SealCapsuleResponse {
+  message: string;
+  public_id: string;
+  state: string;
+}
+
+/**
+ * Seal capsule (transition from paid to sealed)
+ */
+export async function sealCapsule(publicId: string): Promise<SealCapsuleResponse> {
+  return request<SealCapsuleResponse>(`/api/capsules/${publicId}/seal`, {
+    method: 'POST',
+  });
+}
+
+export interface ResetCapsuleToDraftResponse {
+  message: string;
+  public_id: string;
+  state: string;
+}
+
+/**
+ * Reset capsule to draft state (e.g., after payment cancellation)
+ */
+export async function resetCapsuleToDraft(publicId: string): Promise<ResetCapsuleToDraftResponse> {
+  return request<ResetCapsuleToDraftResponse>(`/api/capsules/${publicId}/reset-to-draft`, {
+    method: 'POST',
   });
 }

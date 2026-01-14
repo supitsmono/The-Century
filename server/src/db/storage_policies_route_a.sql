@@ -25,8 +25,10 @@
 -- Do not run ALTER TABLE - you don't have permissions for that.
 
 -- Drop existing policies for 'capsules' bucket if they exist
+-- Remove any duplicate/old policies to avoid confusion
 DROP POLICY IF EXISTS "Allow uploads to capsules bucket" ON storage.objects;
 DROP POLICY IF EXISTS "Allow uploads to capsules bucket (anon)" ON storage.objects;
+DROP POLICY IF EXISTS "allow_capsule_media_uploads" ON storage.objects;
 
 -- Policy: Allow INSERT (upload) for anonymous users
 -- Only allows uploads to paths matching valid capsules in draft/pending_payment state
@@ -37,9 +39,10 @@ TO anon
 WITH CHECK (
   bucket_id = 'capsules'
   AND (
-    -- Path structure: {public_id}/photos/... or {public_id}/video/...
-    -- Extract public_id (first path segment before first /)
-    EXISTS (
+    -- Path must contain /photos/ or /video/
+    (name LIKE '%/photos/%' OR name LIKE '%/video/%')
+    -- Extract public_id from storage object name (first path segment)
+    AND EXISTS (
       SELECT 1
       FROM public.capsules c
       WHERE c.public_id::text = split_part(name, '/', 1)
