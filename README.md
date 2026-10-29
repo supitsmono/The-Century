@@ -1,4 +1,23 @@
-# The Century - Time Capsule Application
+# The Century
+
+**A digital time capsule, sealed for 100 years.** Users write a message, attach photos and video, pay once, and the capsule is locked until its opening date.
+
+![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
+![Express](https://img.shields.io/badge/Express-API-000000?logo=express)
+![Postgres](https://img.shields.io/badge/Postgres-Supabase-3ECF8E?logo=supabase&logoColor=white)
+![Stripe](https://img.shields.io/badge/Stripe-Checkout%20%2B%20webhooks-635BFF?logo=stripe&logoColor=white)
+
+## Highlights
+
+- **Multi-step sealing wizard** — message, media upload, review, payment, sealed confirmation
+- **Payment-driven state machine** — `draft → pending_payment → paid → sealed`, with invalid transitions rejected server-side (`server/src/utils/stateMachine.ts`)
+- **Stripe Checkout + webhooks** — including async payment methods (iDEAL, SEPA), cancel/timeout handling and reset-to-draft
+- **Private media storage** — Supabase Storage bucket with row-level storage policies
+- **Hardened API** — rate limiting, central error handling, validation
+- **Release discipline** — phased build with written release gates and checklists (`PHASE3C_RELEASE_GATE.md`, `RELEASE_CHECKLIST.md`)
+
+---
 
 A time capsule application where users can create sealed capsules with photos, videos, and messages that will be opened in 100 years.
 
@@ -130,3 +149,8 @@ See [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) for full checklist.
 - `STRIPE_SECRET_KEY` - Stripe secret key
 - `STRIPE_WEBHOOK_SECRET` - Stripe webhook secret
 - `PORT` - Server port (default: 5001)
+
+
+---
+
+Built by [Miguel](https://github.com/supitsmono) with an AI-assisted workflow: I own the product, architecture and decisions; AI coding tools write most of the code.
